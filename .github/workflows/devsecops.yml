@@ -1,0 +1,41 @@
+name: DevSecOps Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: SonarQube Scan
+      uses: SonarSource/sonarqube-scan-action@v6
+      env:
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+    - name: Trivy File System Scan
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: fs
+        scan-ref: .
+        severity: CRITICAL,HIGH
+        exit-code: 1
+
+    - name: Build Docker Image
+      run: docker build -t devsecops-website .
+
+    - name: Trivy Docker Image Scan
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: devsecops-website
+        format: table
+        severity: CRITICAL,HIGH
+        exit-code: 1
