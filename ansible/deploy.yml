@@ -1,0 +1,12 @@
+---
+- name: DevSecOps Deployment
+  hosts: localhost
+  connection: local
+
+  tasks:
+
+    - name: Check Kubernetes
+      command: kubectl get nodes
+
+    - name: Check Helm
+      command: helm version
