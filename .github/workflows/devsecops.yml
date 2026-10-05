@@ -1,41 +1,199 @@
-name: DevSecOps Pipeline
+name: DevSecOps CI/CD
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
+
   pull_request:
-    branches: [ "main" ]
+    branches:
+      - main
+
+env:
+  IMAGE_NAME: devsecops-website
 
 jobs:
-  security-scan:
+
+  checkout:
+    name: Checkout Code
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Checkout Code
-      uses: actions/checkout@v4
+  sonar:
+    name: SonarQube Scan
+    needs: checkout
+    runs-on: ubuntu-latest
 
-    - name: SonarQube Scan
-      uses: SonarSource/sonarqube-scan-action@v6
-      env:
-        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Trivy File System Scan
-      uses: aquasecurity/trivy-action@master
-      with:
-        scan-type: fs
-        scan-ref: .
-        severity: CRITICAL,HIGH
-        exit-code: 1
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v6
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
 
-    - name: Build Docker Image
-      run: docker build -t devsecops-website .
+  trivy-fs:
+    name: Trivy Filesystem Scan
+    needs: sonar
+    runs-on: ubuntu-latest
 
-    - name: Trivy Docker Image Scan
-      uses: aquasecurity/trivy-action@master
-      with:
-        image-ref: devsecops-website
-        format: table
-        severity: CRITICAL,HIGH
-        exit-code: 1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Trivy Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: 1
+
+  docker-build:
+    name: Docker Build
+    needs: trivy-fs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Docker Image
+        run: |
+          docker build \
+            -t ${{ env.IMAGE_NAME }}:${{ github.sha }} .
+
+  trivy-image:
+    name: Trivy Docker Scan
+    needs: docker-build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Image
+        run: |
+          docker build \
+            -t ${{ env.IMAGE_NAME }}:${{ github.sha }} .
+
+      - name: Trivy Image Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          severity: HIGH,CRITICAL
+          exit-code: 1
+
+  terraform:
+    name: Terraform
+    needs: trivy-image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init
+
+      - name: Terraform Format
+        working-directory: terraform
+        run: terraform fmt -check
+
+      - name: Terraform Validate
+        working-directory: terraform
+        run: terraform validate
+
+      - name: Terraform Plan
+        working-directory: terraform
+        run: terraform plan
+
+  ansible:
+    name: Ansible Validation
+    needs: terraform
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Ansible
+        run: |
+          python3 -m pip install ansible
+
+      - name: Ansible Syntax Check
+        run: |
+          ansible-playbook \
+            --syntax-check \
+            ansible/deploy.yml
+
+  kubernetes:
+    name: Kubernetes Validation
+    needs: ansible
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Validate Deployment
+        run: |
+          kubectl apply \
+            --dry-run=client \
+            -f k8s/deployment.yaml
+
+      - name: Validate Service
+        run: |
+          kubectl apply \
+            --dry-run=client \
+            -f k8s/service.yaml
+
+  helm:
+    name: Helm Validation
+    needs: kubernetes
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+
+      - name: Helm Lint
+        run: |
+          helm lint helm/devsecops-website
+
+      - name: Helm Template
+        run: |
+          helm template devsecops-website \
+            helm/devsecops-website
+
+  deploy:
+    name: Deploy Application
+    needs:
+      - helm
+      - kubernetes
+    runs-on: ubuntu-latest
+
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy with Helm
+        run: |
+          echo "Deploying DevSecOps Website"
